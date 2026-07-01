@@ -1,0 +1,6 @@
+{
+  "name": "Supervisión de Riesgo Bancario - PLA/FT",
+  "description": "Aplicación de supervisión de riesgo financiero y prevención de lavado de activos y financiamiento del terrorismo (PLA/FT).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
