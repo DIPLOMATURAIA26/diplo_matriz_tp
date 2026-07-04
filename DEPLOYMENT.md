@@ -44,7 +44,7 @@
 
 ```
 GEMINI_API_KEY = "AIzaSyD1234567890..."
-VITE_SUPABASE_URL = "https://smebnmtldditllnyfsgq.supabase.co"
+VITE_SUPABASE_URL = "https://tu-proyecto.supabase.co"
 VITE_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI..."
 ```
 
@@ -53,68 +53,11 @@ VITE_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI..."
 
 ---
 
-## 🗄️ PASO 4: Crear Tablas en Supabase (Opcional pero Recomendado)
+## 🗄️ PASO 4: Crear Tablas en Supabase (Requerido para persistencia real)
 
-Si quieres persistencia de datos en Supabase, ejecuta estos SQL en Supabase Editor:
+Abrí el archivo `scripts/init-supabase.sql` de este repo, copiá **todo** su contenido en el SQL Editor de Supabase y ejecutalo. Ese script es la única fuente de verdad del esquema (crea `risk_datasets`, `risk_calculations`, `risk_thresholds` y `risk_reports` con los tipos exactos que usa el código — importante: `bank_id` es `INT`, no `TEXT`, para que coincida con lo que graba `src/App.tsx`).
 
-```sql
--- Tabla: risk_datasets
-CREATE TABLE IF NOT EXISTS risk_datasets (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  year TEXT NOT NULL,
-  bank_id TEXT NOT NULL,
-  code TEXT,
-  name TEXT,
-  raw_deposits NUMERIC,
-  raw_clients NUMERIC,
-  raw_audit NUMERIC,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(year, bank_id)
-);
-
--- Tabla: risk_reports
-CREATE TABLE IF NOT EXISTS risk_reports (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  year TEXT UNIQUE NOT NULL,
-  report_text TEXT,
-  generated_by TEXT,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Tabla: risk_thresholds
-CREATE TABLE IF NOT EXISTS risk_thresholds (
-  id TEXT PRIMARY KEY DEFAULT 'default',
-  data JSONB,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Habilitar RLS (Row Level Security) - Permitir acceso público
-ALTER TABLE risk_datasets ENABLE ROW LEVEL SECURITY;
-ALTER TABLE risk_reports ENABLE ROW LEVEL SECURITY;
-ALTER TABLE risk_thresholds ENABLE ROW LEVEL SECURITY;
-
--- Políticas de acceso público (LECTURA + ESCRITURA)
-CREATE POLICY "Allow public read" ON risk_datasets
-  FOR SELECT USING (true);
-CREATE POLICY "Allow public insert" ON risk_datasets
-  FOR INSERT WITH CHECK (true);
-CREATE POLICY "Allow public update" ON risk_datasets
-  FOR UPDATE USING (true);
-
-CREATE POLICY "Allow public read" ON risk_reports
-  FOR SELECT USING (true);
-CREATE POLICY "Allow public insert" ON risk_reports
-  FOR INSERT WITH CHECK (true);
-CREATE POLICY "Allow public update" ON risk_reports
-  FOR UPDATE USING (true);
-
-CREATE POLICY "Allow public read" ON risk_thresholds
-  FOR SELECT USING (true);
-CREATE POLICY "Allow public insert" ON risk_thresholds
-  FOR INSERT WITH CHECK (true);
-CREATE POLICY "Allow public update" ON risk_thresholds
-  FOR UPDATE USING (true);
-```
+Si vas a usar la ANON KEY directo desde el navegador (sin login de usuarios todavía), al final del script vas a encontrar comentadas las líneas de `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` + `CREATE POLICY ...`. Descomentalas y ejecutalas también, o las inserciones desde la app van a fallar por permisos.
 
 ---
 
