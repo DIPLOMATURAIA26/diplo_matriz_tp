@@ -33,6 +33,7 @@ import {
   BankRawData 
 } from "./utils";
 import { supabase, isSupabaseConfigured, saveRiskCalculations, saveRiskReport, loadRiskDatasetsByYear } from "./lib/supabase";
+import { readSectorFile, mergeSectorsToBankRawData, SectorRow } from "./lib/excelParser";
 
 /**
  * REPORTES ELIMINADOS — Ahora se generan dinámicamente con Gemini AI
@@ -70,62 +71,26 @@ export default function App() {
   // Temporary raw bank data for the uploadYear inside the modal
   const [tempRawData, setTempRawData] = useState<BankRawData[]>([]);
 
-  // Function to dynamically generate realistic seed-based bank values for custom years
-  const generateDatasetForYear = (yearVal: string): BankRawData[] => {
-    const seed = parseInt(yearVal) || 2025;
-    return [
-      {
-        id: `banco-m-${yearVal}`,
-        code: "13",
-        name: "BANCO M S.A.",
-        rawDeposits: 10000 + ((seed * 73) % 7) * 1000,
-        rawClients: 2000000 + ((seed * 19) % 5) * 600000,
-        rawAudit: 2 + ((seed * 3) % 8),
-      },
-      {
-        id: `banco-e-${yearVal}`,
-        code: "5",
-        name: "BANCO E",
-        rawDeposits: 8000 + ((seed * 17) % 6) * 1200,
-        rawClients: 1500000 + ((seed * 31) % 4) * 800000,
-        rawAudit: 1 + ((seed * 11) % 7),
-      },
-      {
-        id: `banco-t-${yearVal}`,
-        code: "20",
-        name: "BANCO T S.R.L",
-        rawDeposits: 5000 + ((seed * 11) % 5) * 800,
-        rawClients: 1000000 + ((seed * 43) % 6) * 700000,
-        rawAudit: 1 + ((seed * 2) % 6),
-      },
-      {
-        id: `banco-c-${yearVal}`,
-        code: "3",
-        name: "BANCO C",
-        rawDeposits: 3000 + ((seed * 29) % 7) * 1100,
-        rawClients: 1200000 + ((seed * 7) % 5) * 800000,
-        rawAudit: 1 + ((seed * 5) % 9),
-      },
-      {
-        id: `banco-s-${yearVal}`,
-        code: "19",
-        name: "BANCO S Inc.",
-        rawDeposits: 2000 + ((seed * 37) % 6) * 900,
-        rawClients: 400000 + ((seed * 13) % 4) * 300000,
-        rawAudit: 1 + ((seed * 17) % 4),
-      }
-    ];
-  };
+  // Filas reales parseadas de cada archivo Excel/CSV subido por sector (ID Entidad + Denominación + Valor)
+  const [sector1Rows, setSector1Rows] = useState<SectorRow[]>([]);
+  const [sector2Rows, setSector2Rows] = useState<SectorRow[]>([]);
+  const [sector3Rows, setSector3Rows] = useState<SectorRow[]>([]);
 
-  // Synchronize tempRawData inside modal when uploadYear or datasets changes
+  // Synchronize tempRawData inside modal: prioriza los archivos recién subidos
+  // (cruzados por ID Único de Entidad); si no hay archivos nuevos cargados en
+  // esta sesión, usa el dataset ya fijado para ese año; si no existe nada,
+  // queda vacío hasta que el usuario suba los 3 archivos.
   useEffect(() => {
-    if (datasets[uploadYear]) {
+    const merged = mergeSectorsToBankRawData(sector1Rows, sector2Rows, sector3Rows);
+    if (merged.length > 0) {
+      setTempRawData(merged);
+    } else if (datasets[uploadYear]) {
       // Deep copy to prevent mutating datasets state prematurely
       setTempRawData(JSON.parse(JSON.stringify(datasets[uploadYear])));
     } else {
-      setTempRawData(generateDatasetForYear(uploadYear));
+      setTempRawData([]);
     }
-  }, [uploadYear, datasets]);
+  }, [uploadYear, datasets, sector1Rows, sector2Rows, sector3Rows]);
 
   const handleTempRawDataChange = (index: number, field: keyof BankRawData, value: any) => {
     const updated = [...tempRawData];
@@ -137,6 +102,11 @@ export default function App() {
   };
 
   const handleFixDataForYear = () => {
+    if (tempRawData.length === 0) {
+      showNotification("Subí los 3 archivos (Depósitos, Clientes y Auditoría Interna) antes de fijar el período.", "info");
+      return;
+    }
+
     const updatedDatasets = {
       ...datasets,
       [uploadYear]: tempRawData
@@ -178,7 +148,7 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
     if (isSupabaseConfigured && supabase) {
       const rows = tempRawData.map((b) => ({
         year: uploadYear,
-        bank_id: b.id,
+        bank_id: parseInt(b.code, 10),
         code: b.code,
         name: b.name,
         raw_deposits: b.rawDeposits,
@@ -188,7 +158,7 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
 
       supabase
         .from("risk_datasets")
-        .upsert(rows)
+        .upsert(rows, { onConflict: "year,bank_id" })
         .then(({ error: dErr }) => {
           if (dErr) {
             console.error("Error saving datasets to Supabase:", dErr);
@@ -214,7 +184,15 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
     } else {
       showNotification(`Datos consolidados y fijados para el periodo ${uploadYear} con éxito en memoria local.`, "success");
     }
-    
+
+    // Limpiar los archivos de esta sesión de carga para que la próxima sea con archivos nuevos
+    setSector1Rows([]);
+    setSector2Rows([]);
+    setSector3Rows([]);
+    setUploadedSaldosName("No cargado");
+    setUploadedClientsName("No cargado");
+    setUploadedAuditName("No cargado");
+
     setIsUploadModalOpen(false);
   };
 
@@ -230,7 +208,7 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
   const [notification, setNotification] = useState<{ message: string; type: "success" | "info" } | null>(null);
 
   // Executive Report text
-  const [report, setReport] = useState<string>("Selecciona un año y presiona "Recalcular" para generar un reporte ejecutivo.");
+  const [report, setReport] = useState<string>("Selecciona un año y presiona \"Recalcular\" para generar un reporte ejecutivo.");
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [copiedReport, setCopiedReport] = useState<boolean>(false);
 
@@ -317,11 +295,11 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
       const supabaseData = await loadRiskDatasetsByYear(year);
       
       if (supabaseData && supabaseData.length > 0) {
-        // Convertir datos de Supabase a formato BankRawData
+        // Convertir datos de Supabase a formato BankRawData (usando el code/name reales guardados)
         const converted: BankRawData[] = supabaseData.map((row) => ({
-          id: `banco-${row.bank_id}-${year}`,
-          code: String(row.bank_id),
-          name: `BANCO ${String(row.bank_id)}`, // fallback, mejor si viene del lookup
+          id: `banco-${row.bank_id}`,
+          code: row.code ?? String(row.bank_id),
+          name: row.name ?? `ENTIDAD ${row.bank_id}`,
           rawDeposits: row.raw_deposits,
           rawClients: row.raw_clients,
           rawAudit: row.raw_audit,
@@ -344,7 +322,7 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
 
   // On first load or whenever year/thresholds/datasets change, compute banks list and sync to Supabase
   useEffect(() => {
-    const rawList = datasets[year] || datasets["2025"];
+    const rawList = datasets[year] || [];
     const computed = rawList.map((raw) => computeBankScores(raw, thresholds));
     setBanks(computed);
 
@@ -380,7 +358,7 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
       return PRELOADED_REPORTS[selectedYear];
     }
     
-    const rawList = datasets[selectedYear] || datasets["2025"];
+    const rawList = datasets[selectedYear] || [];
     const computedBanks = rawList.map((raw) => computeBankScores(raw, thresholds));
     
     // Sort banks by total risk descending to identify high risk
@@ -1011,59 +989,63 @@ Periodo de supervisión consolidado analizado: ${selectedYear}`;
     showNotification("Reporte copiado al portapapeles.");
   };
 
-  // Reset file simulated loads
+  // Quita el archivo cargado de un sector (ya no simula un nombre por defecto)
   const handleResetSector = (sectorNum: 1 | 2 | 3) => {
     if (sectorNum === 1) {
-      setSector1Status("processing");
-      setTimeout(() => {
-        setUploadedSaldosName("SALDOS.xlsx");
-        setSector1Status("loaded");
-        showNotification("Sector de Depósitos restablecido.");
-      }, 600);
+      setSector1Rows([]);
+      setUploadedSaldosName("No cargado");
+      showNotification("Archivo de Depósitos removido.", "info");
     } else if (sectorNum === 2) {
-      setSector2Status("processing");
-      setTimeout(() => {
-        setUploadedClientsName("CLIENTES.xlsx");
-        setSector2Status("loaded");
-        showNotification("Sector de Clientes restablecido.");
-      }, 600);
+      setSector2Rows([]);
+      setUploadedClientsName("No cargado");
+      showNotification("Archivo de Clientes removido.", "info");
     } else if (sectorNum === 3) {
-      setSector3Status("processing");
-      setTimeout(() => {
-        setUploadedAuditName("AI.xlsx");
-        setSector3Status("loaded");
-        showNotification("Sector de Auditoría Interna restablecido.");
-      }, 600);
+      setSector3Rows([]);
+      setUploadedAuditName("No cargado");
+      showNotification("Archivo de Auditoría Interna removido.", "info");
     }
   };
 
-  // Trigger simulated file loaders
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, sectorNum: 1 | 2 | 3) => {
+  // Lee y parsea de verdad el archivo Excel/CSV subido para el sector indicado,
+  // extrayendo (ID Entidad, Denominación, Valor) de cada fila.
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, sectorNum: 1 | 2 | 3) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (sectorNum === 1) {
-      setUploadedSaldosName(file.name);
-      setSector1Status("processing");
-      setTimeout(() => {
-        setSector1Status("loaded");
-        showNotification(`Archivo '${file.name}' mapeado en Depósitos por ID Único.`);
-      }, 800);
-    } else if (sectorNum === 2) {
-      setUploadedClientsName(file.name);
-      setSector2Status("processing");
-      setTimeout(() => {
-        setSector2Status("loaded");
-        showNotification(`Archivo '${file.name}' mapeado en Clientes por ID Único.`);
-      }, 800);
-    } else if (sectorNum === 3) {
-      setUploadedAuditName(file.name);
-      setSector3Status("processing");
-      setTimeout(() => {
-        setSector3Status("loaded");
-        showNotification(`Archivo '${file.name}' mapeado en Auditoría Interna por ID Único.`);
-      }, 800);
+    const sectorLabel =
+      sectorNum === 1 ? "Depósitos" : sectorNum === 2 ? "Clientes" : "Auditoría Interna";
+    const setName =
+      sectorNum === 1 ? setUploadedSaldosName : sectorNum === 2 ? setUploadedClientsName : setUploadedAuditName;
+    const setStatus =
+      sectorNum === 1 ? setSector1Status : sectorNum === 2 ? setSector2Status : setSector3Status;
+    const setRows =
+      sectorNum === 1 ? setSector1Rows : sectorNum === 2 ? setSector2Rows : setSector3Rows;
+
+    setName(file.name);
+    setStatus("processing");
+
+    try {
+      const rows = await readSectorFile(file);
+      setRows(rows);
+      setStatus("loaded");
+
+      if (rows.length === 0) {
+        showNotification(
+          `No se detectaron filas válidas en '${file.name}'. Verifica que tenga una columna de ID de Entidad numérico.`,
+          "info"
+        );
+      } else {
+        showNotification(`Archivo '${file.name}' procesado: ${rows.length} entidades mapeadas por ID Único en ${sectorLabel}.`, "success");
+      }
+    } catch (err) {
+      console.error(`Error parseando el archivo de ${sectorLabel}:`, err);
+      setStatus("loaded");
+      setRows([]);
+      showNotification(`Error al leer '${file.name}'. Verifica que sea un Excel (.xlsx/.xls) o CSV válido.`, "info");
     }
+
+    // Permite volver a subir el mismo archivo si el usuario lo corrige y lo carga de nuevo
+    e.target.value = "";
   };
 
   // Calibrate & Apply thresholds changes
@@ -1139,7 +1121,7 @@ Periodo de supervisión consolidado analizado: ${selectedYear}`;
   };
 
   // Retrieve raw bank detail lists based on currently selected year
-  const rawListForActiveYear = datasets[year] || datasets["2025"];
+  const rawListForActiveYear = datasets[year] || [];
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex flex-col selection:bg-red-100 selection:text-red-900">
