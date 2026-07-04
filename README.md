@@ -9,35 +9,8 @@ A continuación se detalla el proceso para realizar el deploy del código saniti
 ## 🛠️ Paso 1: Configurar la Base de Datos en Supabase
 
 1. Crea un proyecto gratuito en [Supabase](https://supabase.com).
-2. Ve al **SQL Editor** de tu proyecto y ejecuta el siguiente script para crear las tablas requeridas por la aplicación:
-
-```sql
--- 1. Tabla para calibración de ponderadores y umbrales de riesgo
-CREATE TABLE IF NOT EXISTS risk_thresholds (
-  id TEXT PRIMARY KEY,
-  data JSONB NOT NULL,
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- 2. Tabla para almacenar las matrices consolidadas por periodo/año
-CREATE TABLE IF NOT EXISTS risk_datasets (
-  year TEXT NOT NULL,
-  bank_id TEXT NOT NULL,
-  code TEXT NOT NULL,
-  name TEXT NOT NULL,
-  raw_deposits BIGINT NOT NULL,
-  raw_clients BIGINT NOT NULL,
-  raw_audit INT NOT NULL,
-  PRIMARY KEY (year, bank_id)
-);
-
--- 3. Tabla para almacenar los reportes ejecutivos generados por Gemini AI
-CREATE TABLE IF NOT EXISTS risk_reports (
-  year TEXT PRIMARY KEY,
-  report_text TEXT NOT NULL,
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-```
+2. Ve al **SQL Editor** de tu proyecto, abrí el archivo `scripts/init-supabase.sql` de este repo, copiá todo su contenido y ejecutalo. Ese script es la única fuente de verdad del esquema: crea `risk_datasets`, `risk_calculations`, `risk_thresholds` y `risk_reports` con exactamente las columnas que el código en `src/lib/supabase.ts` y `src/App.tsx` lee y escribe. No trae bancos precargados: todas las entidades (código, nombre y valores) se cargan desde los 3 archivos Excel/CSV que subís en el panel de carga de la app.
+3. Si tu proyecto de Supabase tiene Row Level Security activado por defecto y estás usando la ANON KEY directo desde el navegador (sin login de usuarios todavía), descomentá y ejecutá también las políticas `CREATE POLICY ...` que están al final del script, o las requests fallarán con un error de permisos.
 
 ---
 
@@ -73,4 +46,17 @@ La aplicación está completamente adaptada para funcionar de forma **serverless
 - [x] **Sin credenciales expuestas**: Toda la información sensible y tokens se cargan estrictamente mediante variables de entorno (`process.env` y `import.meta.env`).
 - [x] **Fallback Seguro**: Si las claves de Supabase no están configuradas, la aplicación se inicia automáticamente en modo **Simulado/Local** para no romper la experiencia de usuario y permitir pruebas locales con localStorage.
 - [x] **Consistencia de Datos (Escenario A)**: Toda la fusión de datos cargados de áreas de origen se consolida a través del **ID Único de la Entidad**, garantizando la integridad de auditoría sin importar cambios en la razón social.
-- [x] **Año 2020 para Pruebas de Carga**: Se removieron los datos pre-cargados para el año **2020**, permitiendo a cualquier supervisor hacer clic en el año 2020 y experimentar el flujo de carga desde cero con archivos de ejemplo.
+- [x] **Sin datos precargados / hardcodeados**: Ningún año trae bancos ni coeficientes de ejemplo. El "Centro de Carga" parsea de verdad los 3 archivos Excel/CSV (Depósitos, Clientes, Auditoría Interna) que subas y cruza sus filas por el ID de Entidad (primera columna numérica de cada archivo). Todos los años empiezan vacíos hasta que subís los archivos correspondientes.
+
+---
+
+## 📂 Paso 4: Formato esperado de los 3 archivos de origen
+
+El parser (`src/lib/excelParser.ts`) detecta automáticamente la fila de encabezado (busca la primera celda que contenga "Cod", "N°", "Nro" o "ID") y luego, para cada fila de datos:
+- toma la **primera celda numérica** de la fila como código de entidad (ID Único),
+- toma la **primera celda de texto** como nombre de la entidad,
+- toma la **última celda numérica** de la fila como valor (depósitos, clientes u observaciones, según el sector).
+
+Esto es compatible tal cual con los 3 archivos reales de ejemplo entregados (`Coef_Cant_Clientes_2023.xlsx`, `Coef_Observ_AI_2023.xlsx`, `Coef__Vol_depositos_2023.xlsx`), que tienen un título y una línea de fuente antes del encabezado real, y columnas en distintas posiciones entre archivos.
+
+En el panel **"Centro de Carga e Integración"**, subí cada archivo en su sector correspondiente (Depósitos / Clientes / Auditoría Interna), elegí el año de supervisión y presioná **"Fijar y Consolidar Datos"**. Los datos se guardan en `datasets` (estado local) y, si Supabase está configurado, se sincronizan automáticamente en `risk_datasets`.
