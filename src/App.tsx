@@ -33,7 +33,7 @@ import {
   BankRawData 
 } from "./utils";
 import { supabase, isSupabaseConfigured, saveRiskCalculations, saveRiskReport, loadRiskDatasetsByYear } from "./lib/supabase";
-import { readSectorFile, mergeSectorsToBankRawData, SectorRow } from "./lib/excelParser";
+import { readSectorFile, mergeSectorsToBankRawData, findUnknownCodes, SectorRow } from "./lib/excelParser";
 
 /**
  * REPORTES ELIMINADOS — Ahora se generan dinámicamente con Gemini AI
@@ -81,16 +81,25 @@ export default function App() {
   // esta sesión, usa el dataset ya fijado para ese año; si no existe nada,
   // queda vacío hasta que el usuario suba los 3 archivos.
   useEffect(() => {
-    const merged = mergeSectorsToBankRawData(sector1Rows, sector2Rows, sector3Rows);
+    const merged = mergeSectorsToBankRawData(sector1Rows, sector2Rows, sector3Rows, banksMaster);
     if (merged.length > 0) {
       setTempRawData(merged);
+      if (Object.keys(banksMaster).length > 0) {
+        const unknown = findUnknownCodes(merged, banksMaster);
+        if (unknown.length > 0) {
+          showNotification(
+            `Atención: los ID ${unknown.join(", ")} no están en el maestro de entidades (tabla banks). Se usará el nombre del Excel hasta que los des de alta.`,
+            "info"
+          );
+        }
+      }
     } else if (datasets[uploadYear]) {
       // Deep copy to prevent mutating datasets state prematurely
       setTempRawData(JSON.parse(JSON.stringify(datasets[uploadYear])));
     } else {
       setTempRawData([]);
     }
-  }, [uploadYear, datasets, sector1Rows, sector2Rows, sector3Rows]);
+  }, [uploadYear, datasets, sector1Rows, sector2Rows, sector3Rows, banksMaster]);
 
   const handleTempRawDataChange = (index: number, field: keyof BankRawData, value: any) => {
     const updated = [...tempRawData];
@@ -149,8 +158,6 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
       const rows = tempRawData.map((b) => ({
         year: uploadYear,
         bank_id: parseInt(b.code, 10),
-        code: b.code,
-        name: b.name,
         raw_deposits: b.rawDeposits,
         raw_clients: b.rawClients,
         raw_audit: b.rawAudit,
@@ -218,6 +225,10 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
   // Connection status with Supabase: green (true) if configured and connected, false if not configured
   const [isSupabaseOk, setIsSupabaseOk] = useState<boolean>(isSupabaseConfigured);
 
+  // Maestro de Entidades Bancarias (tabla `banks`): unifica nombre/código por bank_id,
+  // así los Excel pueden traer nombres distintos entre años que igual se cruzan por ID.
+  const [banksMaster, setBanksMaster] = useState<Record<string, { code: string; name: string }>>({});
+
   // Sync with Supabase on mount (Load Thresholds, Datasets, Reports)
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
@@ -226,6 +237,21 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
 
     const fetchSupabaseData = async () => {
       try {
+        // Fetch banks master (maestro fijo de entidades: id -> code/name)
+        const { data: banksData, error: bErr } = await supabase
+          .from("banks")
+          .select("id, code, name");
+
+        let masterMap: Record<string, { code: string; name: string }> = {};
+        if (!bErr && banksData) {
+          masterMap = Object.fromEntries(
+            banksData.map((b: any) => [String(b.id), { code: String(b.code), name: b.name }])
+          );
+          setBanksMaster(masterMap);
+        } else if (bErr) {
+          console.error("Error cargando maestro de bancos:", bErr);
+        }
+
         // Fetch calibration thresholds
         const { data: tData, error: tErr } = await supabase
           .from("risk_thresholds")
@@ -249,10 +275,11 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
             if (!reconstructed[row.year]) {
               reconstructed[row.year] = [];
             }
+            const master = masterMap[String(row.bank_id)];
             reconstructed[row.year].push({
-              id: row.bank_id,
-              code: row.code,
-              name: row.name,
+              id: `banco-${row.bank_id}`,
+              code: master?.code ?? String(row.bank_id),
+              name: master?.name ?? `ENTIDAD ${row.bank_id}`,
               rawDeposits: Number(row.raw_deposits),
               rawClients: Number(row.raw_clients),
               rawAudit: Number(row.raw_audit),
@@ -295,15 +322,18 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
       const supabaseData = await loadRiskDatasetsByYear(year);
       
       if (supabaseData && supabaseData.length > 0) {
-        // Convertir datos de Supabase a formato BankRawData (usando el code/name reales guardados)
-        const converted: BankRawData[] = supabaseData.map((row) => ({
-          id: `banco-${row.bank_id}`,
-          code: row.code ?? String(row.bank_id),
-          name: row.name ?? `ENTIDAD ${row.bank_id}`,
-          rawDeposits: row.raw_deposits,
-          rawClients: row.raw_clients,
-          rawAudit: row.raw_audit,
-        }));
+        // Convertir datos de Supabase a formato BankRawData (nombre/código resueltos vía el maestro `banks`)
+        const converted: BankRawData[] = supabaseData.map((row) => {
+          const master = banksMaster[String(row.bank_id)];
+          return {
+            id: `banco-${row.bank_id}`,
+            code: master?.code ?? String(row.bank_id),
+            name: master?.name ?? `ENTIDAD ${row.bank_id}`,
+            rawDeposits: row.raw_deposits,
+            rawClients: row.raw_clients,
+            rawAudit: row.raw_audit,
+          };
+        });
 
         // Actualizar datasets con datos de Supabase
         setDatasets((prev) => ({
@@ -318,7 +348,7 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
     };
 
     loadYearFromSupabase();
-  }, [year]); // Ejecutar cuando cambia el año
+  }, [year, banksMaster]); // Ejecutar cuando cambia el año o cuando llega el maestro de bancos
 
   // On first load or whenever year/thresholds/datasets change, compute banks list and sync to Supabase
   useEffect(() => {
