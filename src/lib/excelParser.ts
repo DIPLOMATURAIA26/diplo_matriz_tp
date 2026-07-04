@@ -106,13 +106,19 @@ export function readSectorFile(file: File): Promise<SectorRow[]> {
 /**
  * Consolida los tres sectores (Depósitos, Clientes, Auditoría Interna) en una
  * lista de BankRawData, cruzando por el ID Único de Entidad (código).
- * Si una entidad falta en algún sector, ese coeficiente queda en 0 en lugar
- * de inventarse un valor.
+ *
+ * El nombre/código "canónico" de cada entidad sale siempre del maestro fijo
+ * `banks` (banksMaster), no del Excel: así, si un archivo trae una
+ * denominación levemente distinta a la oficial (mayúsculas, razón social
+ * abreviada, etc.), igual se unifica correctamente porque el cruce es por ID,
+ * no por nombre. Si un ID del Excel no existe en el maestro, se usa el
+ * nombre del Excel como respaldo (y conviene darlo de alta en `banks`).
  */
 export function mergeSectorsToBankRawData(
   deposits: SectorRow[],
   clients: SectorRow[],
-  audit: SectorRow[]
+  audit: SectorRow[],
+  banksMaster?: Record<string, { code: string; name: string }>
 ): BankRawData[] {
   const byCode = (rows: SectorRow[]) => {
     const map = new Map<string, SectorRow>();
@@ -129,14 +135,32 @@ export function mergeSectorsToBankRawData(
   return Array.from(allCodes)
     .sort((a, b) => Number(a) - Number(b))
     .map((code) => {
-      const name = dep.get(code)?.name || cli.get(code)?.name || aud.get(code)?.name || `ENTIDAD ${code}`;
+      const master = banksMaster?.[code];
+      const name =
+        master?.name ||
+        dep.get(code)?.name ||
+        cli.get(code)?.name ||
+        aud.get(code)?.name ||
+        `ENTIDAD ${code}`;
       return {
         id: `banco-${code}`,
-        code,
+        code: master?.code ?? code,
         name,
         rawDeposits: dep.get(code)?.value ?? 0,
         rawClients: cli.get(code)?.value ?? 0,
         rawAudit: aud.get(code)?.value ?? 0,
       };
     });
+}
+
+/**
+ * Devuelve los códigos de entidad que aparecieron en los archivos subidos
+ * pero no existen en el maestro `banks`. Útil para avisarle al usuario que
+ * conviene darlos de alta antes de fijar el período.
+ */
+export function findUnknownCodes(
+  rows: BankRawData[],
+  banksMaster: Record<string, { code: string; name: string }>
+): string[] {
+  return rows.filter((r) => !banksMaster[r.code]).map((r) => r.code);
 }

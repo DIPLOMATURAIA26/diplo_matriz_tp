@@ -11,13 +11,40 @@ export const supabase = isSupabaseConfigured
   : null;
 
 /**
- * Leer datos brutos de riesgo (risk_datasets) para un año desde Supabase
+ * Leer el maestro fijo de entidades bancarias (tabla `banks`).
+ * code/name viven acá, no en risk_datasets, para no duplicarlos por año.
+ */
+export async function loadBanksMaster(): Promise<Array<{
+  id: number;
+  code: number;
+  name: string;
+}> | null> {
+  if (!supabase) {
+    console.warn("⚠️ Supabase no configurado, no se puede cargar el maestro de bancos");
+    return null;
+  }
+
+  try {
+    const { data, error } = await supabase.from("banks").select("id, code, name");
+    if (error) {
+      console.error("❌ Error cargando maestro de bancos:", error);
+      return null;
+    }
+    return data || [];
+  } catch (error) {
+    console.error("❌ Error en loadBanksMaster:", error);
+    return null;
+  }
+}
+
+/**
+ * Leer datos brutos de riesgo (risk_datasets) para un año desde Supabase.
+ * No trae code/name: esas columnas viven en el maestro `banks` y se resuelven
+ * en el cliente cruzando por bank_id.
  */
 export async function loadRiskDatasetsByYear(year: string): Promise<Array<{
   year: string;
   bank_id: number;
-  code: string;
-  name: string;
   raw_deposits: number;
   raw_clients: number;
   raw_audit: number;
@@ -30,7 +57,7 @@ export async function loadRiskDatasetsByYear(year: string): Promise<Array<{
   try {
     const { data, error } = await supabase
       .from("risk_datasets")
-      .select("year, bank_id, code, name, raw_deposits, raw_clients, raw_audit")
+      .select("year, bank_id, raw_deposits, raw_clients, raw_audit")
       .eq("year", year);
 
     if (error) {
@@ -130,27 +157,35 @@ export async function saveRiskReport(
 }
 
 /**
- * SQL Schema for Supabase Tables (Run this in Supabase SQL Editor):
- * 
+ * SQL Schema for Supabase Tables — ver el esquema completo y autoritativo en
+ * scripts/init-supabase.sql. Resumen:
+ *
+ * -- 0. Maestro fijo de entidades (code/name viven acá, no en risk_datasets)
+ * CREATE TABLE IF NOT EXISTS banks (
+ *   id INT PRIMARY KEY,
+ *   code INT NOT NULL,
+ *   name TEXT UNIQUE NOT NULL,
+ *   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+ * );
+ *
  * -- 1. Table for calibration thresholds
  * CREATE TABLE IF NOT EXISTS risk_thresholds (
  *   id TEXT PRIMARY KEY,
  *   data JSONB NOT NULL,
  *   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
  * );
- * 
- * -- 2. Table for consolidated bank datasets (see scripts/init-supabase.sql for the full script)
+ *
+ * -- 2. Datos brutos por período, referenciando el maestro por bank_id
  * CREATE TABLE IF NOT EXISTS risk_datasets (
+ *   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
  *   year TEXT NOT NULL,
- *   bank_id INT NOT NULL,      -- Código de entidad (ID Único), ej: 1..20
- *   code TEXT NOT NULL,
- *   name TEXT NOT NULL,
+ *   bank_id INT NOT NULL REFERENCES banks(id),
  *   raw_deposits BIGINT NOT NULL,
  *   raw_clients BIGINT NOT NULL,
  *   raw_audit INT NOT NULL,
- *   PRIMARY KEY (year, bank_id)
+ *   UNIQUE (year, bank_id)
  * );
- * 
+ *
  * -- 3. Table for generated executive reports
  * CREATE TABLE IF NOT EXISTS risk_reports (
  *   year TEXT PRIMARY KEY,
