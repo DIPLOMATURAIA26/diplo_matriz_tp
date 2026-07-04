@@ -16,6 +16,8 @@ export const supabase = isSupabaseConfigured
 export async function loadRiskDatasetsByYear(year: string): Promise<Array<{
   year: string;
   bank_id: number;
+  code: string;
+  name: string;
   raw_deposits: number;
   raw_clients: number;
   raw_audit: number;
@@ -28,7 +30,7 @@ export async function loadRiskDatasetsByYear(year: string): Promise<Array<{
   try {
     const { data, error } = await supabase
       .from("risk_datasets")
-      .select("year, bank_id, raw_deposits, raw_clients, raw_audit")
+      .select("year, bank_id, code, name, raw_deposits, raw_clients, raw_audit")
       .eq("year", year);
 
     if (error) {
@@ -137,10 +139,10 @@ export async function saveRiskReport(
  *   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
  * );
  * 
- * -- 2. Table for consolidated bank datasets
+ * -- 2. Table for consolidated bank datasets (see scripts/init-supabase.sql for the full script)
  * CREATE TABLE IF NOT EXISTS risk_datasets (
  *   year TEXT NOT NULL,
- *   bank_id TEXT NOT NULL,
+ *   bank_id INT NOT NULL,      -- Código de entidad (ID Único), ej: 1..20
  *   code TEXT NOT NULL,
  *   name TEXT NOT NULL,
  *   raw_deposits BIGINT NOT NULL,
