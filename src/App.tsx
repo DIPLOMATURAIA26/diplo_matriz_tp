@@ -48,7 +48,10 @@ export default function App() {
   // Navigation active tab: matriz, depositos, clientes, auditoria
   const [activeTab, setActiveTab] = useState<"matriz" | "depositos" | "clientes" | "auditoria">("matriz");
 
-  // Selection of Period (Year)
+  // Selection of Period (Year). Este valor inicial es solo un placeholder:
+  // apenas se conocen los años con datos reales (Supabase o carga local), se
+  // ajusta automáticamente al año más antiguo disponible (ver efecto de
+  // sincronización con Supabase más abajo).
   const [year, setYear] = useState<string>("2025");
 
   // Calibration Threshold config
@@ -200,6 +203,9 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
     setUploadedClientsName("No cargado");
     setUploadedAuditName("No cargado");
 
+    // Mostrar de inmediato el período recién fijado (ej. si cargaste 2026, pasar a ver 2026)
+    setYear(uploadYear);
+
     setIsUploadModalOpen(false);
   };
 
@@ -287,6 +293,15 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
           });
           setDatasets((prev) => ({ ...prev, ...reconstructed }));
           showNotification("Datos históricos consolidados cargados desde Supabase.", "info");
+
+          // Al levantar la app, mostrar siempre el período más antiguo disponible
+          // (no un año fijo hardcodeado). Si más adelante se carga un año nuevo
+          // más viejo, esta regla solo aplica al arranque, no reemplaza la
+          // selección manual del usuario mientras la app ya está abierta.
+          const yearsWithData = Object.keys(reconstructed).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+          if (yearsWithData.length > 0) {
+            setYear(yearsWithData[0]);
+          }
         }
 
         // Fetch reports
@@ -1773,7 +1788,7 @@ Periodo de supervisión consolidado analizado: ${selectedYear}`;
                                   {raw.name}
                                 </td>
                                 <td className="py-3.5 px-4 text-right text-slate-900 font-bold font-mono">
-                                  ${(raw.rawDeposits * 1000000).toLocaleString('es-ES')}
+                                  ${raw.rawDeposits.toLocaleString('es-ES')}
                                 </td>
                                 <td className="py-3.5 px-4 text-center">
                                   <span className="bg-blue-50 text-blue-700 border border-blue-150 px-2 py-0.5 rounded font-black text-xs">
