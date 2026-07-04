@@ -174,6 +174,21 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
             console.error("Error saving datasets to Supabase:", dErr);
             showNotification("Fijado en memoria local. Error al sincronizar con Supabase.", "info");
           } else {
+            // risk_calculations solo se guarda si risk_datasets se guardó bien,
+            // con los mismos datos recién fijados: nunca deberían desincronizarse.
+            const calcData = tempRawData.map((raw) => {
+              const bank = computeBankScores(raw, thresholds);
+              return {
+                bank_id: parseInt(raw.code, 10),
+                deposits: bank.deposits,
+                clients: bank.clients,
+                audit: bank.audit,
+                total: bank.total,
+                risk_level: bank.riskLevel,
+              };
+            });
+            saveRiskCalculations(uploadYear, calcData);
+
             supabase
               .from("risk_reports")
               .upsert({
@@ -333,6 +348,9 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
       if (!isSupabaseConfigured || !supabase) {
         return; // Sin Supabase, usar datos locales
       }
+      if (Object.keys(banksMaster).length === 0) {
+        return; // Esperar a que llegue el maestro de bancos para evitar una carga prematura con el año placeholder inicial
+      }
 
       const supabaseData = await loadRiskDatasetsByYear(year);
       
@@ -370,19 +388,6 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
     const rawList = datasets[year] || [];
     const computed = rawList.map((raw) => computeBankScores(raw, thresholds));
     setBanks(computed);
-
-    // Persist risk_calculations to Supabase if configured
-    if (isSupabaseConfigured) {
-      const calcData = computed.map((bank) => ({
-        bank_id: parseInt(bank.code, 10),
-        deposits: bank.deposits,
-        clients: bank.clients,
-        audit: bank.audit,
-        total: bank.total,
-        risk_level: bank.riskLevel,
-      }));
-      saveRiskCalculations(year, calcData);
-    }
   }, [year, thresholds, datasets]);
 
   // Sync edit local thresholds when state is reset or loaded
