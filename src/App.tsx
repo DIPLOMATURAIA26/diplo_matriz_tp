@@ -79,16 +79,35 @@ export default function App() {
   const [sector2Rows, setSector2Rows] = useState<SectorRow[]>([]);
   const [sector3Rows, setSector3Rows] = useState<SectorRow[]>([]);
 
+  // Maestro de Entidades Bancarias (tabla `banks`): unifica nombre/código por bank_id,
+  // así los Excel pueden traer nombres distintos entre años que igual se cruzan por ID.
+  // IMPORTANTE: `id` y `code` son columnas DISTINTAS en la tabla `banks`. Este mapa está
+  // indexado por `id` (así lo usan los efectos de lectura de risk_datasets más abajo).
+  const [banksMaster, setBanksMaster] = useState<Record<string, { code: string; name: string }>>({});
+
+  // Índice espejo del maestro, pero por `code` (el que trae el Excel en la primera columna).
+  // Antes, excelParser.ts consultaba `banksMaster[code]` sobre el mapa indexado por `id`,
+  // lo cual solo "funcionaba" porque en el seed actual id === code para las 20 entidades.
+  // Este mapa separado evita ese bug si algún día id y code dejan de coincidir.
+  const banksMasterByCode = React.useMemo(() => {
+    const map: Record<string, { code: string; name: string }> = {};
+    Object.keys(banksMaster).forEach((id) => {
+      const b = banksMaster[id];
+      map[b.code] = b;
+    });
+    return map;
+  }, [banksMaster]);
+
   // Synchronize tempRawData inside modal: prioriza los archivos recién subidos
   // (cruzados por ID Único de Entidad); si no hay archivos nuevos cargados en
   // esta sesión, usa el dataset ya fijado para ese año; si no existe nada,
   // queda vacío hasta que el usuario suba los 3 archivos.
   useEffect(() => {
-    const merged = mergeSectorsToBankRawData(sector1Rows, sector2Rows, sector3Rows, banksMaster);
+    const merged = mergeSectorsToBankRawData(sector1Rows, sector2Rows, sector3Rows, banksMasterByCode);
     if (merged.length > 0) {
       setTempRawData(merged);
-      if (Object.keys(banksMaster).length > 0) {
-        const unknown = findUnknownCodes(merged, banksMaster);
+      if (Object.keys(banksMasterByCode).length > 0) {
+        const unknown = findUnknownCodes(merged, banksMasterByCode);
         if (unknown.length > 0) {
           showNotification(
             `Atención: los ID ${unknown.join(", ")} no están en el maestro de entidades (tabla banks). Se usará el nombre del Excel hasta que los des de alta.`,
@@ -102,7 +121,7 @@ export default function App() {
     } else {
       setTempRawData([]);
     }
-  }, [uploadYear, datasets, sector1Rows, sector2Rows, sector3Rows, banksMaster]);
+  }, [uploadYear, datasets, sector1Rows, sector2Rows, sector3Rows, banksMasterByCode]);
 
   const handleTempRawDataChange = (index: number, field: keyof BankRawData, value: any) => {
     const updated = [...tempRawData];
@@ -117,6 +136,21 @@ export default function App() {
     if (tempRawData.length === 0) {
       showNotification("Subí los 3 archivos (Depósitos, Clientes y Auditoría Interna) antes de fijar el período.", "info");
       return;
+    }
+
+    // Antes de guardar: si hay códigos de entidad que no existen en la tabla `banks`,
+    // el upsert a risk_datasets va a violar la foreign key (bank_id REFERENCES banks(id))
+    // y Postgres rechaza el batch COMPLETO en silencio (quedaba solo en memoria local).
+    // Ahora lo bloqueamos acá con un aviso claro en vez de dejar que falle en Supabase.
+    if (isSupabaseConfigured && Object.keys(banksMasterByCode).length > 0) {
+      const unknown = findUnknownCodes(tempRawData, banksMasterByCode);
+      if (unknown.length > 0) {
+        showNotification(
+          `No se puede fijar el período: los ID ${unknown.join(", ")} no existen en la tabla "banks". Dalos de alta ahí primero (o corregí el código en el Excel) y volvé a intentar.`,
+          "info"
+        );
+        return;
+      }
     }
 
     const updatedDatasets = {
@@ -172,7 +206,10 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
         .then(({ error: dErr }) => {
           if (dErr) {
             console.error("Error saving datasets to Supabase:", dErr);
-            showNotification("Fijado en memoria local. Error al sincronizar con Supabase.", "info");
+            showNotification(
+              `Fijado en memoria local. Error al sincronizar con Supabase: ${dErr.message || dErr.code || "ver consola"}`,
+              "info"
+            );
           } else {
             // risk_calculations solo se guarda si risk_datasets se guardó bien,
             // con los mismos datos recién fijados: nunca deberían desincronizarse.
@@ -246,10 +283,6 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
   // Connection status with Supabase: green (true) if configured and connected, false if not configured
   const [isSupabaseOk, setIsSupabaseOk] = useState<boolean>(isSupabaseConfigured);
 
-  // Maestro de Entidades Bancarias (tabla `banks`): unifica nombre/código por bank_id,
-  // así los Excel pueden traer nombres distintos entre años que igual se cruzan por ID.
-  const [banksMaster, setBanksMaster] = useState<Record<string, { code: string; name: string }>>({});
-
   // Sync with Supabase on mount (Load Thresholds, Datasets, Reports)
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) {
@@ -309,11 +342,12 @@ Periodo de supervisión consolidado analizado: ${uploadYear}`;
           setDatasets((prev) => ({ ...prev, ...reconstructed }));
           showNotification("Datos históricos consolidados cargados desde Supabase.", "info");
 
-          // Al levantar la app, mostrar siempre el período más antiguo disponible
-          // (no un año fijo hardcodeado). Si más adelante se carga un año nuevo
-          // más viejo, esta regla solo aplica al arranque, no reemplaza la
-          // selección manual del usuario mientras la app ya está abierta.
-          const yearsWithData = Object.keys(reconstructed).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+          // Al levantar la app, mostrar el período MÁS RECIENTE disponible
+          // (antes se mostraba el más antiguo, por eso siempre abría en 2023
+          // aunque hubiera datos de 2025). Esta regla solo aplica al arranque,
+          // no reemplaza la selección manual del usuario mientras la app ya
+          // está abierta.
+          const yearsWithData = Object.keys(reconstructed).sort((a, b) => parseInt(b, 10) - parseInt(a, 10));
           if (yearsWithData.length > 0) {
             setYear(yearsWithData[0]);
           }
